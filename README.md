@@ -1,75 +1,132 @@
 # Ongaku
 
-Offline music player, built as a static HTML app with vanilla JavaScript. No
-build step, no dependencies, no network access required.
+An offline-first playlist app that plays audio from YouTube. Playlists,
+songs and downloaded covers live on the device. Audio (and the YouTube
+player used to stream it) needs an internet connection.
 
-**Status:** wireframe. Layout, navigation and placeholder screens only. Product
-specs are still to come; expect structure and content to change.
+Pure HTML, CSS and vanilla JavaScript. No build step, no framework, no npm
+install. Dexie is vendored; the YouTube IFrame API is loaded at runtime.
 
 ## Run
 
-Open `index.html` directly in a browser, or serve the folder locally:
+Serve the folder locally (recommended — the YouTube IFrame API is happiest on
+a real origin):
 
 ```sh
 python3 -m http.server 8000
-# then open http://localhost:8000
+# open http://localhost:8000
 ```
 
-Everything works from `file://` as well: scripts are plain `<script>` tags (no
-ES modules), styling is local, and routing uses URL hashes.
+Opening `index.html` directly also works for browsing the library, but some
+browsers restrict the YouTube player and image downloads on `file://`.
+
+## What it does
+
+- **Playlists** — create with a name and optional cover image URL, rename,
+  re-cover, delete. The cover is downloaded, resized to ≤512 px, converted to
+  JPEG and stored in `localStorage`; the source URL stays on the record.
+- **Songs** — each song has a name, YouTube URL and optional picture URL.
+  Playlists hold any number of songs.
+- **Playback** — YouTube audio through a hidden 1×1 iframe. The video is never
+  shown. Play/pause, previous and next live in the sticky player bar.
+- **Cover fallback** — playing art uses the song picture if set, otherwise the
+  playlist cover, otherwise a placeholder. Images that fail to load fall back
+  the same way.
+- **Persistence** — playlist and song records are stored in IndexedDB via
+  Dexie. Covers use `localStorage`, keeping large blobs out of the playlist
+  records and out of exports.
+- **Backup** — export the whole library or a single playlist as JSON. Cover
+  data is not embedded: the export contains image URLs only. Import the file
+  on another device and covers are downloaded again.
+- **Navigation** — hash routes (`#/playlists`, `#/playlists/:id`), back links,
+  browser history and a player that survives route changes.
 
 ## Structure
 
 ```
-index.html            App shell: header, nav, screen outlet, player bar
+index.html                 App shell: header, library outlet, player, dialogs
 css/
-  base.css            Tokens, reset, shell layout, shared wireframe components
+  base.css                 Tokens, reset, shared components, player, modals
   screens/
-    home.css          Screen-specific styles, loaded up front
-    library.css
-    player.css
-    settings.css
+    playlists.css          Playlist grid
+    playlist-detail.css    Playlist header, song list
 js/
-  router.js           Tiny hash router (#/home, #/library, …)
-  app.js              Boot, screen rendering, nav state, player bar wiring
+  vendor/dexie.min.js      Dexie 4 (Apache-2.0), vendored for offline use
+  vendor/LICENSE-Dexie     Dexie license
+  ui.js                    Icons, escapes, toasts, modals, menus, busy overlay
+  images.js                Cover download → resize → localStorage
+  db.js                    Dexie schema and playlist/song CRUD
+  youtube.js               IFrame API loader, audio wrapper, URL parsing
+  player.js                Queue, sticky player state, media session
+  actions.js               Shared create/edit/delete/import/export flows
+  router.js                Hash router with :params
   screens/
-    home.js           One file per screen, registered on window.Ongaku.screens
-    library.js
-    player.js
-    settings.js
+    playlists.js           Library grid
+    playlist-detail.js     Playlist detail and song list
+  app.js                   Boot and route mounting
 ```
 
-## Adding a screen
+## Data model
 
-1. Create `css/screens/<name>.css` and link it in `index.html` from the
-   `<head>`.
-2. Create `js/screens/<name>.js` and register it:
+```js
+// Dexie table: playlists
+{
+  id: 1,                    // auto-increment
+  name: "Late night drive",
+  imageUrl: "https://…",    // original cover URL (exports use this)
+  createdAt: 1710000000000,
+  updatedAt: 1710000000000,
+  songs: [
+    {
+      id: "uuid",
+      name: "Song title",
+      url: "https://www.youtube.com/watch?v=…",
+      pictureUrl: "https://…",  // optional
+      addedAt: 1710000000000
+    }
+  ]
+}
 
-   ```js
-   window.Ongaku.screens.<name> = {
-     title: "Page title",
-     render: function () {
-       return "<section>…</section>"; // HTML string
-     },
-     mount: function (root) {
-       // optional: attach listeners after the markup is in the DOM
-     }
-   };
-   ```
+// localStorage key
+"ongaku.cover.<playlist id>": "data:image/jpeg;base64,…"
+```
 
-3. Add the script tag before `js/app.js` and add `<name>` to `screenOrder` in
-   `js/app.js`.
-4. Add a nav link in `index.html` with `data-route="<name>"` and
-   `href="#/<name>"`.
+### Export format
 
-## Conventions
+```json
+{
+  "app": "ongaku",
+  "version": 1,
+  "exportedAt": "2024-01-01T00:00:00.000Z",
+  "playlists": [
+    {
+      "name": "Late night drive",
+      "imageUrl": "https://…",
+      "songs": [
+        {
+          "name": "Song title",
+          "url": "https://www.youtube.com/watch?v=…",
+          "pictureUrl": "https://…"
+        }
+      ]
+    }
+  ]
+}
+```
 
-- Screen modules render HTML strings; keep markup out of `app.js`.
-- Shared UI (buttons, chips, cards, wireframe placeholders) lives in
-  `css/base.css`; screen files only add layout that belongs to that screen.
-- Wireframe placeholders use `.wf-art`, `.wf-panel` and `.wf-line` so they are
-  easy to find and remove when real content arrives.
-- Use design tokens (`var(--surface)`, `var(--accent)`, …) instead of hard-coded
-  colours. Dark mode follows the system preference automatically.
-- Player bar and player screen buttons are local wireframe stubs; there is no
-  audio engine yet.
+## Notes and limits
+
+- Playback requires internet. The app shows an offline banner and reports
+  YouTube/network errors in the player bar.
+- Covers can only be stored automatically when the image host allows CORS.
+  If a download is blocked, the playlist is still created and the original
+  image URL is displayed, but the cover is not available offline. Re-exporting
+  still includes that URL.
+- The player uses the official YouTube IFrame Player API. Availability,
+  embedding permissions and regional restrictions apply per video.
+- `localStorage` is limited (usually ~5 MB per origin). Covers are compressed,
+  but a very large library can still fill it; the app reports storage errors.
+- There is no service worker or PWA manifest; the app itself is static files
+  on disk. YouTube content is always streamed.
+- Tested in modern evergreen browsers. Use the local HTTP server for the
+  fewest surprises.

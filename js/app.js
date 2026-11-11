@@ -1,100 +1,153 @@
 /* ------------------------------------------------------------------
    Ongaku — app.js
-   Boots the screen registry, wires navigation and the persistent
-   player bar. Runs last; screens register themselves on
-   window.Ongaku.screens.
+   Boots the player, registers routes and mounts screens. Runs last.
 ------------------------------------------------------------------- */
 
 (function () {
   "use strict";
 
-  var screens = window.Ongaku.screens || {};
-  var screenOrder = ["home", "library", "player", "settings"];
+  var O = window.Ongaku;
+  var ui = O.ui;
+  var router = O.router;
+  var screens = O.screens;
 
   var screenRoot = document.getElementById("screen");
-  var navLinks = Array.prototype.slice.call(document.querySelectorAll("[data-route]"));
+  var main = document.getElementById("main");
+  var renderToken = 0;
+  var currentCleanup = null;
+  var lastPath = null;
 
-  var iconPlay =
-    '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
-  var iconPause =
-    '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>';
-
-  function updateRangeFill(input) {
-    var max = Number(input.max) || 100;
-    var value = Number(input.value) || 0;
-    var percent = Math.max(0, Math.min(100, (value / max) * 100));
-    input.style.setProperty("--range-progress", percent + "%");
+  function showError(error) {
+    document.title = "Something went wrong — Ongaku";
+    screenRoot.innerHTML =
+      '<div class="empty-state">' +
+        '<span class="empty-state__icon">' + ui.icon("alert", 28) + "</span>" +
+        '<h2 class="empty-state__title">This page could not be loaded</h2>' +
+        '<p class="empty-state__text">' +
+          ui.escapeHtml(
+            (error && error.message) ||
+              "Check that this browser allows IndexedDB and try again."
+          ) +
+        "</p>" +
+        '<div class="empty-state__actions">' +
+          '<a class="btn btn--primary" href="#/playlists">Back to playlists</a>' +
+        "</div>" +
+      "</div>";
   }
 
-  function initRanges() {
-    var ranges = document.querySelectorAll(".range");
-    Array.prototype.forEach.call(ranges, function (input) {
-      if (input.dataset.rangeReady !== "true") {
-        input.dataset.rangeReady = "true";
-        input.addEventListener("input", function () {
-          updateRangeFill(input);
-        });
+  function show(route) {
+    var screen = screens[route.screen];
+
+    if (!screen) {
+      showError(new Error("That screen does not exist."));
+      return;
+    }
+
+    var token = ++renderToken;
+    var samePath = lastPath === route.path;
+    lastPath = route.path;
+
+    if (currentCleanup) {
+      try {
+        currentCleanup();
+      } catch (error) {
+        /* ignore cleanup failures */
       }
-      updateRangeFill(input);
-    });
-  }
+      currentCleanup = null;
+    }
 
-  function initPlayerBar() {
-    var toggle = document.querySelector('[data-player="toggle"]');
-    if (toggle) {
-      toggle.addEventListener("click", function () {
-        var playing = toggle.getAttribute("aria-pressed") === "true";
-        toggle.setAttribute("aria-pressed", String(!playing));
-        toggle.setAttribute("aria-label", playing ? "Play" : "Pause");
-        toggle.innerHTML = playing ? iconPlay : iconPause;
+    ui.closeMenu();
+    ui.closeModal();
+
+    screenRoot.innerHTML = '<div class="loading">Loading…</div>';
+
+    Promise.resolve()
+      .then(function () {
+        return screen.render(route.params || {});
+      })
+      .then(function (html) {
+        if (token !== renderToken) return;
+
+        screenRoot.innerHTML = html;
+        document.title = (screen.title || "Ongaku") + " — Ongaku";
+
+        var cleanup = null;
+        if (typeof screen.mount === "function") {
+          cleanup = screen.mount(screenRoot, route.params || {});
+        }
+
+        if (token !== renderToken) {
+          if (typeof cleanup === "function") {
+            try {
+              cleanup();
+            } catch (error) {
+              /* ignore */
+            }
+          }
+          return;
+        }
+
+        currentCleanup = typeof cleanup === "function" ? cleanup : null;
+
+        // Keep the reading position when a form/dialog refreshes the same
+        // view, but start new routes at the top.
+        if (!samePath) window.scrollTo(0, 0);
+
+        if (main) {
+          try {
+            main.focus({ preventScroll: true });
+          } catch (error) {
+            main.focus();
+          }
+        }
+      })
+      .catch(function (error) {
+        if (token !== renderToken) return;
+        showError(error);
+        ui.toast("This page could not be loaded.", "error");
       });
+  }
+
+  function initOfflineBanner() {
+    var banner = document.getElementById("offline-banner");
+    if (!banner) return;
+
+    function update() {
+      banner.hidden = navigator.onLine;
     }
 
-    initRanges();
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    update();
   }
 
-  function setActiveNav(key) {
-    navLinks.forEach(function (link) {
-      var active = link.getAttribute("data-route") === key;
-      link.classList.toggle("is-active", active);
-      if (active) link.setAttribute("aria-current", "page");
-      else link.removeAttribute("aria-current");
-    });
-  }
+  function initSkipLink() {
+    var skipLink = document.querySelector(".skip-link");
+    if (!skipLink || !main) return;
 
-  function show(key) {
-    var screen = screens[key];
-    if (!screen) return;
-
-    screenRoot.innerHTML = screen.render();
-
-    if (typeof screen.mount === "function") {
-      screen.mount(screenRoot);
-    }
-
-    setActiveNav(key);
-    document.title = screen.title + " — Ongaku";
-    initRanges();
-    window.scrollTo(0, 0);
-  }
-
-  // Keep the in-page skip link from being treated as a route by the
-  // hash router: move focus without touching location.hash.
-  var skipLink = document.querySelector(".skip-link");
-  if (skipLink) {
     skipLink.addEventListener("click", function (event) {
-      var main = document.getElementById("main");
-      if (!main) return;
       event.preventDefault();
       main.focus();
       main.scrollIntoView({ block: "start" });
     });
   }
 
-  screenOrder.forEach(function (key) {
-    if (screens[key]) window.Ongaku.router.register(key);
-  });
+  function init() {
+    O.player.init();
+    initOfflineBanner();
+    initSkipLink();
 
-  initPlayerBar();
-  window.Ongaku.router.start(show);
+    router.register("playlists", "playlists");
+    router.register("playlists/:id", "playlistDetail");
+
+    O.app = {
+      refresh: function () {
+        router.refresh();
+      }
+    };
+
+    router.start(show);
+  }
+
+  init();
 })();
